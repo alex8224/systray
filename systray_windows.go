@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 package systray
@@ -200,8 +201,8 @@ type winTray struct {
 	muNID sync.RWMutex
 	wcex  *wndClassEx
 
-	wmSystrayMessage,
-	wmTaskbarCreated uint32
+	wmSystrayMessage, wmTaskbarCreated uint32
+	doubleClickChan                    chan struct{}
 }
 
 // Loads an image from file and shows it in tray.
@@ -247,12 +248,13 @@ var wt winTray
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ms633573(v=vs.85).aspx
 func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam uintptr) (lResult uintptr) {
 	const (
-		WM_RBUTTONUP  = 0x0205
-		WM_LBUTTONUP  = 0x0202
-		WM_COMMAND    = 0x0111
-		WM_ENDSESSION = 0x0016
-		WM_CLOSE      = 0x0010
-		WM_DESTROY    = 0x0002
+		WM_LBUTTONDBLCLK = 0x0203
+		WM_RBUTTONUP     = 0x0205
+		WM_LBUTTONUP     = 0x0202
+		WM_COMMAND       = 0x0111
+		WM_ENDSESSION    = 0x0016
+		WM_CLOSE         = 0x0010
+		WM_DESTROY       = 0x0002
 	)
 	switch message {
 	case WM_COMMAND:
@@ -277,8 +279,10 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		systrayExit()
 	case t.wmSystrayMessage:
 		switch lParam {
-		case WM_RBUTTONUP, WM_LBUTTONUP:
+		case WM_RBUTTONUP:
 			t.showMenu()
+		case WM_LBUTTONDBLCLK:
+			t.trayClicked()
 		}
 	case t.wmTaskbarCreated: // on explorer.exe restarts
 		t.muNID.Lock()
@@ -295,6 +299,11 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		)
 	}
 	return
+}
+
+// 向 doubleClickChan 这个channel 中发送一条消息触发函数调用
+func (t *winTray) trayClicked() {
+	t.doubleClickChan <- struct{}{}
 }
 
 func (t *winTray) initInstance() error {
@@ -426,6 +435,8 @@ func (t *winTray) initInstance() error {
 	}
 	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
 
+	//注册双击处理器
+	t.doubleClickChan = make(chan struct{})
 	return t.nid.add()
 }
 
@@ -905,11 +916,6 @@ func SetTooltip(tooltip string) {
 		log.Errorf("Unable to set tooltip: %v", err)
 		return
 	}
-}
-
-// SetRemovalAllowed sets whether a user can remove the systray icon or not.
-// This is only supported on macOS.
-func SetRemovalAllowed(allowed bool) {
 }
 
 func addOrUpdateMenuItem(item *MenuItem) {
